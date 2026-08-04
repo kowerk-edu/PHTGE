@@ -1,0 +1,447 @@
+/**
+ * Darstellung und Bedienung der Kursseite.
+ * Inhalte werden ausschließlich aus verwaltung/ und materialien/ geladen.
+ */
+
+import {
+  $,
+  $$,
+  browserPath,
+  collectSearch,
+  countMaterials,
+  formatBytes,
+  isSafeLink,
+  stripHtml
+} from "./utils.js";
+
+function iconFor(kind) {
+  return ({
+    pdf: "PDF",
+    html: "▶",
+    image: "▧",
+    video: "▶",
+    audio: "♫",
+    file: "↓",
+    page: "≡",
+    folder: "▤",
+    link: "↗"
+  })[kind] || "•";
+}
+
+function kindLabel(file) {
+  return ({
+    pdf: "PDF-Dokument",
+    html: "HTML-Übung / Simulation",
+    image: "Bild",
+    video: "Video",
+    audio: "Audio",
+    file: "Download"
+  })[file.kind] || file.mime || "Datei";
+}
+
+function materialCountLabel(count) {
+  return count === 1 ? "1 Material" : `${count} Materialien`;
+}
+
+function announcementCountLabel(count) {
+  return count === 1 ? "1 Ankündigung" : `${count} Ankündigungen`;
+}
+
+function formatDate(value) {
+  if (!value) return "";
+  const date = new Date(`${value}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("de-DE", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  }).format(date);
+}
+
+export function startCourseApp(data) {
+  const grid = $("#courseGrid");
+  const nav = $("#sectionNav");
+  const modal = $("#viewerModal");
+  const viewerBody = $("#viewerBody");
+  const viewerTitle = $("#viewerTitle");
+  const viewerType = $("#viewerType");
+  const openNewTab = $("#openNewTab");
+  const downloadFile = $("#downloadFile");
+  let lastFocused = null;
+
+  document.title = `${data.course.title} · Kurs`;
+  $("#courseTitle").textContent = data.course.title || "Physikkurs";
+  $("#courseShortname").textContent = data.course.shortname || "Kurs";
+  $("#courseCategory").textContent = data.course.category || "";
+  $("#heroEyebrow").textContent = data.hero.eyebrow || "TGM11 · Physik";
+  $("#heroTitle").textContent = data.hero.title || "Alle Materialien an einem Ort";
+  $("#heroText").textContent = data.hero.text || "Öffne Themen, PDFs und Übungen direkt im Browser.";
+
+  function setExpanded(button, panel, expanded) {
+    button.setAttribute("aria-expanded", String(expanded));
+    panel.hidden = !expanded;
+  }
+
+  function createAnnouncement(announcement) {
+    const article = document.createElement("article");
+    article.className = `announcement${announcement.important ? " important" : ""}`;
+    article.dataset.search = `${announcement.title} ${announcement.text} ${announcement.date}`.toLowerCase();
+
+    const icon = document.createElement("span");
+    icon.className = "announcement-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = announcement.important ? "!" : "i";
+
+    const content = document.createElement("div");
+    content.className = "announcement-content";
+
+    const heading = document.createElement("div");
+    heading.className = "announcement-heading";
+    const title = document.createElement("strong");
+    title.textContent = announcement.title;
+    heading.append(title);
+
+    if (announcement.date) {
+      const time = document.createElement("time");
+      time.dateTime = announcement.date;
+      time.textContent = formatDate(announcement.date);
+      heading.append(time);
+    }
+    content.append(heading);
+
+    if (announcement.text) {
+      const text = document.createElement("p");
+      text.textContent = announcement.text;
+      content.append(text);
+    }
+
+    if (announcement.link && isSafeLink(announcement.link)) {
+      const link = document.createElement("a");
+      link.href = browserPath(announcement.link).replace(/^https%3A\/\//i, "https://").replace(/^http%3A\/\//i, "http://");
+      if (/^https?:\/\//i.test(announcement.link)) {
+        link.href = announcement.link;
+        link.target = "_blank";
+        link.rel = "noopener";
+      }
+      link.textContent = announcement.linkText || "Mehr erfahren";
+      content.append(link);
+    }
+
+    article.append(icon, content);
+    return article;
+  }
+
+  function createMaterial(item) {
+    if (item.type === "subsection") return createSubsection(item);
+
+    if (item.type === "folder") {
+      const section = document.createElement("section");
+      section.className = "subsection material-folder";
+      section.dataset.search = `${item.title} ${collectSearch(item.items || [])}`.toLowerCase();
+
+      const header = document.createElement("div");
+      header.className = "material";
+      header.innerHTML = `<span class="item-icon" aria-hidden="true">${iconFor("folder")}</span><span class="material-copy"><span class="material-title"></span><span class="material-meta"></span></span>`;
+      $(".material-title", header).textContent = item.title;
+      $(".material-meta", header).textContent = materialCountLabel(countMaterials(item.items || []));
+      section.append(header);
+
+      const list = document.createElement("div");
+      list.className = "folder-list";
+      (item.items || []).forEach(child => list.append(createMaterial(child)));
+      section.append(list);
+      return section;
+    }
+
+    if (item.type === "link") {
+      const link = document.createElement("a");
+      link.className = "material external-link";
+      link.href = item.url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.dataset.search = `${item.title} ${item.description || ""} ${item.url}`.toLowerCase();
+      link.innerHTML = `<span class="item-icon" aria-hidden="true">${iconFor("link")}</span><span class="material-copy"><span class="material-title"></span><span class="material-meta"></span></span><span class="material-action">Öffnen ↗</span>`;
+      $(".material-title", link).textContent = item.title;
+      $(".material-meta", link).textContent = item.description || item.url;
+      return link;
+    }
+
+    if (item.type === "page") {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "material";
+      button.dataset.search = `${item.title} ${stripHtml(item.html)}`.toLowerCase();
+      button.innerHTML = `<span class="item-icon" aria-hidden="true">${iconFor("page")}</span><span class="material-copy"><span class="material-title"></span><span class="material-meta">Kursseite</span></span><span class="material-action">Öffnen</span>`;
+      $(".material-title", button).textContent = item.title;
+      button.addEventListener("click", () => openPage(item));
+      return button;
+    }
+
+    if (item.type === "resource") {
+      return createFileButton(item.title, item.resource, item.intro);
+    }
+
+    const unknown = document.createElement("div");
+    unknown.className = "material empty-material";
+    unknown.textContent = item.title || "Unbekanntes Material";
+    return unknown;
+  }
+
+  function createFileButton(title, file, intro = "") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "material";
+    button.dataset.search = `${title} ${file.filename || ""} ${stripHtml(intro)}`.toLowerCase();
+    const meta = [kindLabel(file), formatBytes(file.size)].filter(Boolean).join(" · ");
+    button.innerHTML = `<span class="item-icon" aria-hidden="true"></span><span class="material-copy"><span class="material-title"></span><span class="material-meta"></span></span><span class="material-action">Öffnen</span>`;
+    $(".item-icon", button).textContent = iconFor(file.kind);
+    $(".material-title", button).textContent = title;
+    $(".material-meta", button).textContent = meta;
+    button.addEventListener("click", () => openFile(title, file));
+    return button;
+  }
+
+  function createSubsection(item) {
+    const fragment = $("#subsectionTemplate").content.cloneNode(true);
+    const section = $(".subsection", fragment);
+    const toggle = $(".subsection-toggle", fragment);
+    const body = $(".subsection-body", fragment);
+    const title = $(".subsection-title", fragment);
+    const meta = $(".subsection-meta", fragment);
+    const summary = $(".subsection-summary", fragment);
+    const items = $(".subsection-items", fragment);
+
+    title.textContent = item.title;
+    const count = countMaterials(item.items || []);
+    meta.textContent = count ? materialCountLabel(count) : "Noch ohne Inhalte";
+    summary.innerHTML = item.summary || "";
+    if (!item.summary) summary.remove();
+
+    (item.items || []).forEach(child => items.append(createMaterial(child)));
+    if (!(item.items || []).length) {
+      const empty = document.createElement("div");
+      empty.className = "material empty-material";
+      empty.innerHTML = `<span class="item-icon" aria-hidden="true">·</span><span class="material-copy"><span class="material-title">Noch keine Materialien</span><span class="material-meta">Dateien in diesen Ordner unter materialien/ hochladen.</span></span>`;
+      items.append(empty);
+    }
+
+    section.dataset.search = `${item.title} ${stripHtml(item.summary)} ${collectSearch(item.items || [])}`.toLowerCase();
+    toggle.addEventListener("click", () => {
+      setExpanded(toggle, body, toggle.getAttribute("aria-expanded") !== "true");
+    });
+    return fragment;
+  }
+
+  function sectionSearchText(sectionData) {
+    const announcements = (sectionData.announcements || [])
+      .map(item => `${item.title} ${item.text} ${item.date}`)
+      .join(" ");
+    return `${sectionData.title} ${stripHtml(sectionData.summary)} ${announcements} ${collectSearch(sectionData.items || [])}`.toLowerCase();
+  }
+
+  function sectionCount(sectionData) {
+    const parts = [];
+    const announcements = (sectionData.announcements || []).length;
+    const materials = countMaterials(sectionData.items || []);
+    if (announcements) parts.push(announcementCountLabel(announcements));
+    if (materials) parts.push(materialCountLabel(materials));
+    return parts.join(" · ") || "Noch ohne Inhalte";
+  }
+
+  function renderSection(sectionData) {
+    const fragment = $("#sectionTemplate").content.cloneNode(true);
+    const article = $(".section-card", fragment);
+    const cover = $(".section-cover", fragment);
+    const content = $(".section-content", fragment);
+    const image = $(".cover-image", fragment);
+    const summary = $(".section-summary", fragment);
+    const items = $(".section-items", fragment);
+
+    article.id = `section-${sectionData.id}`;
+    article.dataset.search = sectionSearchText(sectionData);
+    $(".section-number", fragment).textContent = Number(sectionData.number) === 0 ? "Start" : `Thema ${sectionData.number}`;
+    $(".section-title", fragment).textContent = sectionData.title;
+    $(".section-count", fragment).textContent = sectionCount(sectionData);
+
+    if (sectionData.image) {
+      image.style.backgroundImage = `url("${browserPath(sectionData.image)}")`;
+    } else {
+      image.style.backgroundImage = "radial-gradient(circle at 75% 20%, rgba(255,255,255,.2), transparent 28%), linear-gradient(130deg,#246aa6,#123e65)";
+    }
+
+    summary.innerHTML = sectionData.summary || "";
+    if (!sectionData.summary) summary.remove();
+
+    if ((sectionData.announcements || []).length) {
+      const announcementList = document.createElement("div");
+      announcementList.className = "announcement-list";
+      sectionData.announcements.forEach(item => announcementList.append(createAnnouncement(item)));
+      items.before(announcementList);
+    }
+
+    (sectionData.items || []).forEach(item => items.append(createMaterial(item)));
+    if (!(sectionData.items || []).length && !(sectionData.announcements || []).length) {
+      const empty = document.createElement("div");
+      empty.className = "material empty-material";
+      empty.innerHTML = `<span class="item-icon" aria-hidden="true">·</span><span class="material-copy"><span class="material-title">Noch keine Inhalte</span><span class="material-meta">Dateien in den passenden Themenordner unter materialien/ hochladen.</span></span>`;
+      items.append(empty);
+    }
+
+    cover.addEventListener("click", () => {
+      const open = cover.getAttribute("aria-expanded") !== "true";
+      setExpanded(cover, content, open);
+      article.classList.toggle("open", open);
+      if (open) history.replaceState(null, "", `#${article.id}`);
+    });
+    grid.append(fragment);
+
+    const navButton = document.createElement("button");
+    navButton.type = "button";
+    navButton.className = "nav-link";
+    navButton.innerHTML = `<span class="nav-number"></span><span class="nav-title"></span>`;
+    $(".nav-number", navButton).textContent = Number(sectionData.number) === 0 ? "S" : sectionData.number;
+    $(".nav-title", navButton).textContent = sectionData.title;
+    navButton.addEventListener("click", () => {
+      article.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (cover.getAttribute("aria-expanded") !== "true") cover.click();
+      closeSidebar();
+    });
+    nav.append(navButton);
+  }
+
+  function openFile(title, file) {
+    lastFocused = document.activeElement;
+    viewerTitle.textContent = title;
+    viewerType.textContent = kindLabel(file);
+    const url = browserPath(file.path);
+    openNewTab.href = url;
+    openNewTab.hidden = false;
+    downloadFile.href = url;
+    downloadFile.download = file.filename || "";
+    downloadFile.hidden = false;
+    viewerBody.replaceChildren();
+
+    if (["pdf", "html", "image"].includes(file.kind)) {
+      const frame = document.createElement("iframe");
+      frame.className = "viewer-frame";
+      frame.title = title;
+      frame.src = url;
+      frame.allowFullscreen = true;
+      if (file.kind === "html") {
+        frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-presentation");
+      }
+      viewerBody.append(frame);
+    } else if (file.kind === "video") {
+      const video = document.createElement("video");
+      video.className = "viewer-media";
+      video.src = url;
+      video.controls = true;
+      video.playsInline = true;
+      viewerBody.append(video);
+    } else if (file.kind === "audio") {
+      const audio = document.createElement("audio");
+      audio.className = "viewer-audio";
+      audio.src = url;
+      audio.controls = true;
+      viewerBody.append(audio);
+    } else {
+      const page = document.createElement("div");
+      page.className = "page-view prose";
+      const heading = document.createElement("h2");
+      heading.textContent = "Datei herunterladen";
+      const text = document.createElement("p");
+      text.textContent = "Dieser Dateityp wird nicht direkt im Browser angezeigt.";
+      const linkParagraph = document.createElement("p");
+      const link = document.createElement("a");
+      link.className = "button secondary";
+      link.href = url;
+      link.download = file.filename || "";
+      link.textContent = "Download starten";
+      linkParagraph.append(link);
+      page.append(heading, text, linkParagraph);
+      viewerBody.append(page);
+    }
+
+    showModal();
+    history.replaceState(null, "", `#material=${encodeURIComponent(file.path)}`);
+  }
+
+  function openPage(item) {
+    lastFocused = document.activeElement;
+    viewerTitle.textContent = item.title;
+    viewerType.textContent = "Kursseite";
+    openNewTab.hidden = true;
+    downloadFile.hidden = true;
+    viewerBody.replaceChildren();
+    const page = document.createElement("article");
+    page.className = "page-view prose";
+    page.innerHTML = item.html || "<p>Diese Seite enthält keinen Inhalt.</p>";
+    viewerBody.append(page);
+    showModal();
+  }
+
+  function showModal() {
+    modal.hidden = false;
+    document.body.classList.add("modal-open");
+    $("[data-close-modal]", modal).focus();
+  }
+
+  function closeModal() {
+    if (modal.hidden) return;
+    modal.hidden = true;
+    viewerBody.replaceChildren();
+    document.body.classList.remove("modal-open");
+    if (location.hash.startsWith("#material=")) {
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    lastFocused?.focus();
+  }
+
+  $$('[data-close-modal]').forEach(element => element.addEventListener("click", closeModal));
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      closeModal();
+      closeSidebar();
+    }
+  });
+
+  data.sections.forEach(renderSection);
+
+  const searchInput = $("#searchInput");
+  searchInput.addEventListener("input", () => {
+    const term = searchInput.value.trim().toLowerCase();
+    let visible = 0;
+    $$(".section-card", grid).forEach(card => {
+      const match = !term || card.dataset.search.includes(term);
+      card.hidden = !match;
+      if (match) visible += 1;
+    });
+    $("#searchStatus").textContent = term ? `${visible} von ${data.sections.length} Bereichen gefunden` : "";
+    $("#emptySearch").hidden = visible !== 0;
+  });
+
+  const menuButton = $("#menuButton");
+  const sidebar = $("#sidebar");
+  menuButton.addEventListener("click", () => {
+    const open = !sidebar.classList.contains("open");
+    sidebar.classList.toggle("open", open);
+    menuButton.setAttribute("aria-expanded", String(open));
+  });
+
+  function closeSidebar() {
+    sidebar.classList.remove("open");
+    menuButton.setAttribute("aria-expanded", "false");
+  }
+
+  const initialHash = location.hash;
+  if (initialHash.startsWith("#section-")) {
+    const target = document.querySelector(initialHash);
+    if (target) {
+      const cover = $(".section-cover", target);
+      const content = $(".section-content", target);
+      setExpanded(cover, content, true);
+      target.classList.add("open");
+      setTimeout(() => target.scrollIntoView({ block: "start" }), 0);
+    }
+  }
+}
